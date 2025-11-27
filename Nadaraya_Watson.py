@@ -17,7 +17,7 @@ def f(x):
     return 2 * torch.sin(x) + x ** 0.8
 
 y_train = f(x_train) + torch.normal(0.0, 0.5, (n_train,))
-x_test = torch.arange(0, 5, 0.01)
+x_test = torch.arange(0, 5, 0.1)
 y_truth = f(x_test)
 n_test = len(x_test)
 
@@ -49,16 +49,38 @@ class NWKernelReg(nn.Module):
     def __init__(self, **kwargs):
         super(NWKernelReg, self).__init__(**kwargs)
         self.w = nn.Parameter(torch.rand((1,),requires_grad=True))
+    def forward(self, queries, keys, values):
+        queries = queries.repeat_interleave(keys.shape[1]).reshape(-1,keys.shape[1])
+        self.attention_weight = nn.functional.softmax(-((queries-keys)*self.w)**2/2,dim=1)
 
-        def forward(self, queries, keys, values):
-            queries = queries.repeat_interleave(keys.shape[1]).reshape(-1,keys.shape[1])
-            self.attention_weight = nn.functional.softmax(-((queries-keys)*self.w)**2/2,dim=1)
-
-            return torch.bmm(self.attention_weight.unsqueeze(1),values.unsqueeze(-1).reshape(-1))
+        return torch.bmm(self.attention_weight.unsqueeze(1),values.unsqueeze(-1)).reshape(-1)
 print("x shape",x_train.shape)        
 x_tile = x_train.repeat((n_train,1))
 y_tile = y_train.repeat((n_train,1))
 print("x tile",x_tile)
 print("y tile",y_tile)
 # q取出非对角元素，k取出对角元素，v取出y_train
-# keys = x_tile[(1 - torch.eye(n_train)).type(torch.bool)].reshape((n_train, -1))
+keys = x_tile[(1 - torch.eye(n_train)).type(torch.bool)].reshape((n_train, -1))
+values = y_tile[(1 - torch.eye(n_train)).type(torch.bool)].reshape((n_train, -1))
+
+epochs = 15
+net = NWKernelReg()
+loss = nn.MSELoss(reduction= "none")
+trainer = torch.optim.SGD(net.parameters(),lr=0.25)
+animator = d2l.Animator(xlabel='epoch', ylabel='loss', xlim=[1, epochs])
+
+for epoch in range(1, epochs + 1):
+    trainer.zero_grad()
+    l = loss(net(x_train, keys, values), y_train)
+    l.sum().backward()
+    trainer.step()
+    print(f"epoch {epoch}, loss {l.sum().item()}")
+    animator.add(epoch + 1, l.sum().item())
+
+# 训练结束后显示预测结果
+print(f'w的估计量: {net.w.data}')
+print(f'w的梯度: {net.w.grad}')
+# 预测
+y_hat = net(x_test, x_tile, y_tile).unsqueeze(1).detach()
+plot_kernel_reg(y_hat)
+d2l.plt.show()
