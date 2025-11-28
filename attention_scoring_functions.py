@@ -45,12 +45,34 @@ class AdditiveAttention(nn.Module):
         return torch.bmm(self.dropout(self.attention_weights), values)
     
 # 测试加性注意力
-queries, keys = torch.normal(0, 1, (2, 1, 20)), torch.ones((2, 10, 2))
-values = torch.arange(40,dtype=torch.float32).reshape(1, 10, 4).repeat(2,axis=0)
-valid_lens = np.array([2, 6])
+key_features, query_features, num_hidden, dropout = 2, 20, 8, 0.1
+queries, keys = torch.normal(0, 1, (2, 1, query_features)), torch.ones((2, 10, key_features))
+values = torch.arange(40,dtype=torch.float32).reshape(1, 10, 4).repeat(2,1,1)
+valid_lens = torch.tensor([2, 6])
 
-attention = AdditiveAttention(num_hiddens=8, dropout=0.1)
-attention.initialize()
-attention(queries, keys, values, valid_lens)
+attention = AdditiveAttention(key_size=key_features, query_size=query_features, num_hiddens=num_hidden,
+                              dropout=dropout)
+# 关闭训练，使得dropout不发生作用
+attention.eval()
+print(attention(queries, keys, values, valid_lens))
 
 
+# 缩放点积注意力
+class DotProductAttention(nn.Module):
+    def init__(self, dropout, **kwargs):
+        super(DotProductAttention, self).__init__(**kwargs)
+        self.dropout = nn.Dropout(dropout)
+        
+    def forward(self, queries, keys, values, valid_lens=None):
+        d = queries.shape[-1]
+        scores  = torch.bmm(queries,keys.transpose(1,2)) / math.sqrt(d)
+        self.attention_weights = masked_softmax(scores, valid_lens)
+        # 随机丢弃一部分注意力权重
+        return torch.bmm(self.dropout(self.attention_weights), values)
+    
+# 测试缩放点积注意力
+query_features = 2
+queries = torch.normal(0, 1, (2, 1, query_features))
+attention = DotProductAttention(dropout=0.1)
+attention.eval()
+print(attention(queries, keys, values, valid_lens))
