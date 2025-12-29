@@ -131,3 +131,55 @@ def train_epoch_ch3(net, train_iter, loss, updater):
     # 返回训练损失和训练精度
     return metric[0] / metric[2], metric[1] / metric[2]
     
+def evaluate_accuracy_gpu(net, data_iter, device=None):
+    '''使用GPU计算模型在数据集上的精度'''
+    if isinstance(net, torch.nn.Module):
+        net.eval()  # 评估模式, 这会关闭dropout
+        if not device:
+            device = next(iter(net.parameters())).device
+    # 正确预测数、预测总数
+    metric = Accumulator(2)
+    with torch.no_grad():
+        for X, y in data_iter:
+            if isinstance(X, list):
+                # 如果X是一个列表，则将每个张量分配到device上
+                X = [x.to(device) for x in X]
+            else:
+                X = X.to(device)
+            y = y.to(device)
+            metric.add(accuracy(net(X), y), y.numel())
+    return metric[0] / metric[1]
+
+def train_ch6(net, trainer_iter, test_iter, num_epochs, lr, device):
+    '''GPU上训练模型'''
+    def init_weights(m):
+        if type(m) == nn.linear or type(m) == nn.Conv2d:
+            nn.init.xavier_uniform_(m.weight)
+    net.apply(init_weights)
+    print('training on', device)
+    net.to(device)
+    optimizer = torch.optim.SGD(net.parameters(), lr=lr)
+    loss = nn.CrossEntropyLoss()
+    animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs],
+                            legend=['train loss', 'train acc', 'test acc'])
+    
+    timer, num_epochs = d2l.Timer(), len(trainer_iter)
+    for epoch in range(num_epochs):
+        metric = Accumulator(3)
+        net.train()
+        for i,(X,y) in enumerate(trainer_iter):
+            timer.start()
+            optimizer.zero_grad()
+            X,y = X.to(device), y.to(device)
+            y_hat = net(X)
+            l = loss(y_hat,y)
+            l.backward()
+            optimizer.step()
+            with torch.no_grad():
+                metric.add(l * X.shape[0], accuracy(y_hat,y), X.shape[0])
+            timer.stop()
+            train_l = metric[0] / metric[2]
+            train_acc = metric[1] / metric[2]
+            if (i+1)%(num_epochs//5) ==0 or i == len(trainer_iter)-1:
+                animator.add(epoch + (i + 1) / len(trainer_iter),
+                             (train_l, train_acc, None))
