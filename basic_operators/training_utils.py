@@ -92,14 +92,14 @@ def load_data_fashion_mnist(batch_size, resize=None):
         trans.insert(0, transforms.Resize(resize))
     trans = transforms.Compose(trans)
     mnist_train = torchvision.datasets.FashionMNIST(
-        root="./data", train=True, transform=trans, download=True)
+        root="../data", train=True, transform=trans, download=True)
     mnist_test = torchvision.datasets.FashionMNIST(
-        root="./data", train=False, transform=trans, download=True)
+        root="../data", train=False, transform=trans, download=True)
     return(
         data.DataLoader(mnist_train, batch_size, shuffle=True,
-                        num_workers=get_dataloader_workers()),
+                        num_workers=get_dataloader_workers(), pin_memory=True),
         data.DataLoader(mnist_test, batch_size, shuffle=False,
-                        num_workers=get_dataloader_workers())
+                        num_workers=get_dataloader_workers(), pin_memory=True)
     )
 
 def get_fashion_mnist_labels(labels):
@@ -151,9 +151,9 @@ def evaluate_accuracy_gpu(net, data_iter, device=None):
     return metric[0] / metric[1]
 
 def train_ch6(net, trainer_iter, test_iter, num_epochs, lr, device):
-    '''GPU上训练模型'''
+    '''GPU上训练模型,训练函数假定从高级API创建的模型作为输入，并进行相应的优化'''
     def init_weights(m):
-        if type(m) == nn.linear or type(m) == nn.Conv2d:
+        if type(m) == nn.Linear or type(m) == nn.Conv2d:
             nn.init.xavier_uniform_(m.weight)
     net.apply(init_weights)
     print('training on', device)
@@ -163,8 +163,9 @@ def train_ch6(net, trainer_iter, test_iter, num_epochs, lr, device):
     animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs],
                             legend=['train loss', 'train acc', 'test acc'])
     
-    timer, num_epochs = d2l.Timer(), len(trainer_iter)
+    timer, num_batches = d2l.Timer(), len(trainer_iter)
     for epoch in range(num_epochs):
+        print(f'epoch {epoch + 1}')
         metric = Accumulator(3)
         net.train()
         for i,(X,y) in enumerate(trainer_iter):
@@ -180,6 +181,52 @@ def train_ch6(net, trainer_iter, test_iter, num_epochs, lr, device):
             timer.stop()
             train_l = metric[0] / metric[2]
             train_acc = metric[1] / metric[2]
-            if (i+1)%(num_epochs//5) ==0 or i == len(trainer_iter)-1:
-                animator.add(epoch + (i + 1) / len(trainer_iter),
+            if (i+1) % (max(1, num_batches//5)) == 0 or i == num_batches - 1:
+                animator.add(epoch + (i + 1) / num_batches ,
                              (train_l, train_acc, None))
+        test_acc = evaluate_accuracy_gpu(net, test_iter)
+        animator.add(epoch+1, (None, None, test_acc))
+    print(f'loss {train_l:.3f}, train acc {train_acc:.3f}, '
+            f'test acc {test_acc:.3f}')
+    print(f'{metric[2] * num_epochs / timer.sum():.1f} examples/sec '
+        f'on {str(device)}')
+    
+def batch_norm(X, gamma, beta, moving_mean, moving_var, eps, momentum):
+    '''通过is_grad_enabled来判断当前模式是训练模式还是预测模式'''
+    if not torch.is_grad_enabled():
+        # 预测模式下使用全局统计量
+        X_hat = (X - moving_mean) / torch.sqrt(moving_var + eps)
+    else:
+        assert len(X.shape) in (2, 4)
+        if len(X.shape) == 2:
+            # 全连接层的批量归一化
+            mean = X.mean(dim=0)
+            var = ((X - mean)**2).mean(dim=0)
+        else:
+            # 卷积层的批量归一化
+            mean = X.mean(dim=(0, 2, 3), keepdim=True)
+            var = ((X - mean)**2).mean(dim=(0, 2, 3), keepdim=True)
+        X_hat = (X - mean) / torch.sqrt(var + eps)
+        # 更新全局统计量
+        moving_mean = momentum * moving_mean + (1.0 - momentum) * mean
+        moving_var = momentum * moving_var + (1.0 - momentum) * var
+    Y = gamma * X_hat + beta  # 拉伸和偏移
+    return Y, moving_mean.data, moving_var.data
+
+class BatchNorm(nn.Module):
+    def __init__(self, num_features, num_dims):
+        super().__init__()
+        if num_dims == 2:
+            shape = (1, num_features)
+        else:
+            shape = (1, num_features, 1, 1)
+        self.gamma = nn.Parameter(torch.ones(shape))
+        self.beta = nn.Parameter(torch.zeros(shape))
+        self.moving_mean = torch.zeros(shape)
+        self.moving_var = torch.ones(shape)
+
+    def forward(self, X):
+        Y, self.moving_mean, self.moving_var = batch_norm(
+            X, self.gamma, self.beta, self.moving_mean,
+            self.moving_var, eps=1e-5, momentum=0.9)
+        return Y
