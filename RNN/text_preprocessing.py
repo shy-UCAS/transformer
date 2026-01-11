@@ -200,6 +200,7 @@ def train_epoch_ch8(net, train_iter, loss, updater, device, use_random_iter):
             if isinstance(net, nn.Module) and not isinstance(state, tuple):
                 # state对于nn.GRU是个张量
                 state.detach_()
+                
             else:
                 # state对于nn.LSTM或对于我们从零开始实现的模型是个张量
                 for s in state:
