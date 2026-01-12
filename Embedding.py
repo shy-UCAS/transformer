@@ -34,3 +34,5 @@ class TransformerEmbedding(nn.Module):
 
     def forward(self, x):
         x = self.token_embedding(x) + self.position_embedding(x)
+
+
